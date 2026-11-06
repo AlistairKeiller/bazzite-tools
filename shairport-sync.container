@@ -1,0 +1,25 @@
+# Shairport Sync AirPlay 2 receiver as a rootful Podman Quadlet.
+# install.sh copies this to /etc/containers/systemd/ and fills in your UID
+# (the 1000 in the PipeWire path) and the AirPlay name (the -a value).
+[Unit]
+Description=Shairport Sync (AirPlay 2)
+After=network-online.target avahi-daemon.service
+
+[Container]
+Image=docker.io/mikebrady/shairport-sync:latest
+Network=host
+AddCapability=SYS_NICE
+SecurityLabelDisable=true
+Environment=ENABLE_AVAHI=0
+Environment=XDG_RUNTIME_DIR=/tmp
+Volume=/run/dbus:/run/dbus
+Volume=/run/avahi-daemon:/run/avahi-daemon
+Volume=/run/user/1000/pipewire-0:/tmp/pipewire-0
+Exec=-o pipewire -a Bazzite
+
+[Service]
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
