@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Calibrate room EQ
+Comment=Measure the speaker with the EMM-6 and apply the correction
+Icon=audio-speakers
+Terminal=true
+Exec="@CALIBRATE@" --pause
+Categories=AudioVideo;Audio;

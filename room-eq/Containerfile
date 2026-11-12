@@ -1,0 +1,6 @@
+# DRC-FIR (glsweep, lsconv, drc) for calibrate.py. Bazzite has no package for
+# it, so it runs from this image with rootless Podman.
+FROM docker.io/library/debian:trixie-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends drc \
+ && rm -rf /var/lib/apt/lists/*

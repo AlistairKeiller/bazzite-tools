@@ -1,0 +1,12 @@
+# Web UI for CamillaDSP at http://localhost:5005 (this machine only).
+[Unit]
+Description=CamillaGUI (web UI for CamillaDSP)
+After=camilladsp.service
+
+[Service]
+ExecStart=%h/camilladsp/camillagui_backend/camillagui_backend
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,16 @@
+# CamillaDSP as a user service: captures the "KH 120A (room EQ)" sink, applies
+# ~/camilladsp/configs/room-eq.yml and plays on the audio interface.
+# `systemctl --user reload camilladsp` re-reads the config without a dropout.
+[Unit]
+Description=CamillaDSP (room EQ)
+After=pipewire.service wireplumber.service
+PartOf=pipewire.service
+
+[Service]
+ExecStart=%h/camilladsp/camilladsp -a 127.0.0.1 -p 1234 -s %h/camilladsp/statefile.yml %h/camilladsp/configs/room-eq.yml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=pipewire.service
