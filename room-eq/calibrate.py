@@ -12,9 +12,10 @@ builds), which computes a 65536-tap correction filter towards target.txt. The
 filter goes into the CamillaDSP config and is live at once; a second sweep
 through the corrected chain then shows what was actually achieved.
 
-Before running: mic on input 1 with 48V on, INST and AIR off, Direct Monitor
-OFF, mic at ear height at the listening position pointing at the speaker, room
-quiet and nothing else playing. Start with the speaker volume low and raise it
+Before running: mic plugged into the interface's XLR input with 48V on, INST
+and AIR off, Direct Monitor OFF, mic at ear height at the listening position
+pointing at the speaker, room quiet and nothing else playing. Every input of
+the interface is recorded and the one that hears the sweep is used. Start with the speaker volume low and raise it
 if the script says the signal is too quiet.
 
 --strength picks one of DRC's stock profiles: stronger corrects more of the
@@ -46,13 +47,13 @@ HOME = Path.home() / "camilladsp"
 CONFIG = HOME / "configs" / "room-eq.yml"
 COEFFS = HOME / "coeffs"
 WORK = HOME / "measurement"
+OUTPUT_FILE = HOME / "output-node"  # written by install.sh: the node the speaker is on
 EQ_SINK = "camilladsp-sink"
 CONTAINER = ["podman", "run", "--rm", "--security-opt", "label=disable"]
 IMAGE = "room-eq-drc"
 RATE = 48000
 SWEEP_SECONDS = 20
 SWEEP_AMPLITUDE = 0.5
-MIC_INPUT = 0  # first input of the interface
 # The range the before/after flatness figures cover: where target.txt is flat.
 FLAT_BAND = (70.0, 16000.0)
 
@@ -78,32 +79,30 @@ def read_floats(path):
 
 # --- Playing and recording through PipeWire ----------------------------------
 
-def find_device(media_class, wanted=None):
-    """Return (node.name, [channel names]) of node `wanted`, or of the one Scarlett."""
+def devices(media_class, name=None):
+    """[(node.name, [channel names])] of node `name`, or of every Scarlett node."""
     dump = json.loads(subprocess.run(["pw-dump"], check=True, capture_output=True, text=True).stdout)
 
     def props(obj):
         return (obj.get("info") or {}).get("props") or {}
 
-    nodes = [o for o in dump if o.get("type") == "PipeWire:Interface:Node"
-             and props(o).get("media.class") == media_class]
-    if wanted:
-        match = [o for o in nodes if props(o).get("node.name") == wanted]
-    else:
-        match = [o for o in nodes if "scarlett" in
-                 f"{props(o).get('node.name')} {props(o).get('node.description')}".lower()]
-    if len(match) != 1:
-        names = "\n  ".join(props(o).get("node.name", "?") for o in nodes) or "(none)"
-        die(f"expected exactly one {media_class} matching {wanted or 'Scarlett'}, "
-            f"found {len(match)} among:\n  {names}")
-    direction = "input" if media_class == "Audio/Sink" else "output"
-    ports = sorted((int(props(o).get("port.id", 0)), props(o)["audio.channel"]) for o in dump
-                   if o.get("type") == "PipeWire:Interface:Port"
-                   and props(o).get("node.id") == match[0]["id"]
-                   and o["info"].get("direction") == direction and "audio.channel" in props(o))
-    if not ports:
-        die(f"{props(match[0])['node.name']} has no audio ports")
-    return props(match[0])["node.name"], [channel for _, channel in ports]
+    found = []
+    for node in dump:
+        if node.get("type") != "PipeWire:Interface:Node" or props(node).get("media.class") != media_class:
+            continue
+        label = f"{props(node).get('node.name')} {props(node).get('node.description')}"
+        if not (props(node).get("node.name") == name if name else "scarlett" in label.lower()):
+            continue
+        direction = "input" if media_class == "Audio/Sink" else "output"
+        ports = sorted((int(props(o).get("port.id", 0)), props(o)["audio.channel"]) for o in dump
+                       if o.get("type") == "PipeWire:Interface:Port"
+                       and props(o).get("node.id") == node["id"]
+                       and o["info"].get("direction") == direction and "audio.channel" in props(o))
+        if ports:
+            found.append((props(node)["node.name"], [channel for _, channel in ports]))
+    if not found:
+        die(f"no {media_class} named {name or '*Scarlett*'}; is the interface plugged in?")
+    return found
 
 
 def write_wav(path, mono, channels, active):
@@ -148,46 +147,60 @@ def read_wav_channel(path, index):
     die(f"no audio data in {path}")
 
 
-def sweep_and_record(name, sink, active=None):
+def record(source, channels, path):
+    return subprocess.Popen(
+        ["pw-record", "--target", source, "--rate", str(RATE), "--format", "f32",
+         "--channels", str(len(channels)), "--channel-map", ",".join(channels), str(path)])
+
+
+def sweep_and_record(name, sink, active=None, mic=None):
     """Play sweep.pcm on `sink` (on the `active` channels, default all) and
-    leave what the mic heard in WORK/<name>.pcm."""
-    source, source_channels = find_device("Audio/Source")
-    _, sink_channels = find_device("Audio/Sink", sink)
-    play_path, rec_path = WORK / "play.wav", WORK / "rec.wav"
+    leave what the mic heard in WORK/<name>.pcm.
+
+    `mic` is (source node, channel index). Without it every input of the
+    interface is recorded and the loudest one is used. Returns the mic used.
+    """
+    (_, sink_channels), = devices("Audio/Sink", sink)
+    sources = devices("Audio/Source", mic[0]) if mic else devices("Audio/Source")
+    play_path = WORK / "play.wav"
     write_wav(play_path, read_floats(WORK / "sweep.pcm"), len(sink_channels),
               range(len(sink_channels)) if active is None else active)
-    rec_path.unlink(missing_ok=True)
-    print(f"    {sink} -> {source} [{source_channels[MIC_INPUT]}]")
     for n in (3, 2, 1):
         print(f"\r    sweep starts in {n}... (about {SWEEP_SECONDS + 6} s, keep quiet)", end="", flush=True)
         time.sleep(1)
     print()
-    rec = subprocess.Popen(
-        ["pw-record", "--target", source, "--rate", str(RATE), "--format", "f32",
-         "--channels", str(len(source_channels)), "--channel-map", ",".join(source_channels),
-         str(rec_path)])
+    recorders = [(source, WORK / f"rec{i}.wav", record(source, channels, WORK / f"rec{i}.wav"))
+                 for i, (source, channels) in enumerate(sources)]
     try:
         time.sleep(1.0)
-        if rec.poll() is not None:
+        if any(rec.poll() is not None for _, _, rec in recorders):
             die("pw-record could not start recording")
         subprocess.run(["pw-play", "--target", sink, "--channel-map", ",".join(sink_channels),
                         str(play_path)], check=True)
         time.sleep(1.0)
     finally:
-        rec.send_signal(signal.SIGINT)
-        try:
-            rec.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            rec.kill()
-    mono = read_wav_channel(rec_path, MIC_INPUT)
+        for _, _, rec in recorders:
+            rec.send_signal(signal.SIGINT)
+        for _, _, rec in recorders:
+            try:
+                rec.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                rec.kill()
+    takes = []  # (energy, source, channel index, samples)
+    for (source, channels), (_, path, _) in zip(sources, recorders):
+        for index in ([mic[1]] if mic else range(len(channels))):
+            samples = read_wav_channel(path, index)
+            takes.append((sum(v * v for v in samples), source, index, samples))
+        path.unlink()
     play_path.unlink()
-    rec_path.unlink()
+    _, source, index, mono = max(takes, key=lambda take: take[0])
     peak = max(max(mono, default=0.0), -min(mono, default=0.0))
-    print(f"    recorded peak {20 * math.log10(max(peak, 1e-10)):.1f} dBFS")
+    print(f"    {sink} -> {source} input {index + 1}, peak {20 * math.log10(max(peak, 1e-10)):.1f} dBFS")
     if peak > 0.98:
         die("the input is clipping: turn the input gain or the speaker down and run again")
     with open(WORK / f"{name}.pcm", "wb") as f:
         mono.tofile(f)
+    return source, index
 
 
 def impulse_response(recording):
@@ -289,16 +302,13 @@ def report(before, after):
 # --- CamillaDSP config -------------------------------------------------------
 
 def current_output():
-    """The node CamillaDSP plays on: the one in the config, else the Scarlett."""
-    if CONFIG.exists():
-        m = re.search(r'^  playback:\n(?:    .*\n)*?    autoconnect_to: "(.+)"$', CONFIG.read_text(), re.M)
-        if not m:
-            die(f"no playback autoconnect_to in {CONFIG}; pass --output")
-        return m[1]
-    return find_device("Audio/Sink")[0]
+    """The node the speaker is on, as chosen by install.sh."""
+    if not OUTPUT_FILE.exists():
+        die(f"{OUTPUT_FILE} not found; run install.sh first")
+    return OUTPUT_FILE.read_text().strip()
 
 
-def install_config(output, note, filter_path=None, headroom=0.0):
+def install_config(note, filter_path=None, headroom=0.0):
     """Write and activate the config; returns whether CamillaDSP is running with it."""
     correction, names = "", "[]"
     if filter_path:
@@ -319,6 +329,7 @@ filters:
 """
     text = f"""# Generated by calibrate.py ({note}). Edits made here or in CamillaGUI
 # (http://localhost:5005) are overwritten the next time that script runs.
+# The two devices are wired up by camilladsp-link.service, not by this file.
 description: "Room EQ for the KH 120A ({note})"
 devices:
   samplerate: {RATE}
@@ -326,11 +337,9 @@ devices:
   capture:
     type: PipeWire
     channels: 2
-    autoconnect_to: "{EQ_SINK}"
   playback:
     type: PipeWire
     channels: 2
-    autoconnect_to: "{output}"
 
 mixers:
   # One speaker on the left output: play L+R there and leave the right silent.
@@ -376,7 +385,7 @@ pipeline:
 
 def calibrate(args):
     cal = load_cal(args.cal)
-    output = args.output or current_output()
+    output = current_output()
     WORK.mkdir(parents=True, exist_ok=True)
     COEFFS.mkdir(parents=True, exist_ok=True)
 
@@ -388,7 +397,7 @@ def calibrate(args):
         drc_tool("glsweep", str(RATE), str(SWEEP_AMPLITUDE), "10", "21000", str(SWEEP_SECONDS),
                  "2", "0.05", "0.005", "sweep.pcm", "inverse.pcm")
         # Straight to the interface's first output, bypassing the current correction.
-        sweep_and_record("recording", output, active=[0])
+        mic = sweep_and_record("recording", output, active=[0])
     before = response(*impulse_response("recording"), cal)
 
     print(f"==> Computing the correction (DRC, {args.strength})")
@@ -407,7 +416,7 @@ def calibrate(args):
     # A new file name each time, so CamillaDSP sees a changed config and reloads.
     filter_path = COEFFS / f"room-eq-{time.strftime('%Y%m%d-%H%M%S')}.pcm"
     shutil.copyfile(WORK / "filter.pcm", filter_path)
-    live = install_config(output, f"DRC {args.strength}, {time.strftime('%Y-%m-%d %H:%M')}",
+    live = install_config(f"DRC {args.strength}, {time.strftime('%Y-%m-%d %H:%M')}",
                           filter_path, headroom)
 
     after = None
@@ -415,7 +424,7 @@ def calibrate(args):
         print("==> Measuring the result through the correction")
         time.sleep(3)  # let CamillaDSP switch to the new filter
         try:
-            sweep_and_record("verify", EQ_SINK)
+            sweep_and_record("verify", EQ_SINK, mic=mic)
             after = response(*impulse_response("verify"), cal)
         except SystemExit as e:
             print(f"warning: the correction is installed, but measuring it failed ({e.code}); "
@@ -433,17 +442,18 @@ def main():
     parser.add_argument("--cal", default=HERE / "emm6-38048.txt", help="mic calibration file (freq/dB text, on-axis)")
     parser.add_argument("--reuse", action="store_true", help="recompute from the last sweep instead of measuring")
     parser.add_argument("--flat", action="store_true", help="remove the correction")
-    parser.add_argument("--output", help="PipeWire node.name to play on (default: the one in the config)")
     parser.add_argument("--pause", action="store_true", help="wait for Enter before exiting (for the launcher)")
     args = parser.parse_args()
     status = 0
     try:
         if args.flat:
-            install_config(args.output or current_output(), "flat")
+            install_config("flat")
         else:
             calibrate(args)
-    except (SystemExit, subprocess.CalledProcessError, OSError) as e:
-        status = e.code if isinstance(e, SystemExit) else f"error: {e}"
+    except SystemExit as e:
+        status = e.code
+    except Exception as e:  # keep the launcher's window open whatever went wrong
+        status = f"error: {e!r}"
     except KeyboardInterrupt:
         status = "interrupted"
     if args.pause:

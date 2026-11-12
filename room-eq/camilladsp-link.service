@@ -1,0 +1,14 @@
+# Connects CamillaDSP to the "KH 120A (room EQ)" sink and the audio interface,
+# and reconnects it when either comes back (see camilladsp-link.sh).
+[Unit]
+Description=Connect CamillaDSP to its sink and the audio interface
+After=camilladsp.service
+PartOf=camilladsp.service
+
+[Service]
+ExecStart=%h/camilladsp/camilladsp-link.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=camilladsp.service

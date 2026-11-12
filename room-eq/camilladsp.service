@@ -1,5 +1,5 @@
-# CamillaDSP as a user service: captures the "KH 120A (room EQ)" sink, applies
-# ~/camilladsp/configs/room-eq.yml and plays on the audio interface.
+# CamillaDSP as a user service: applies ~/camilladsp/configs/room-eq.yml to
+# whatever camilladsp-link.service connects it to.
 # `systemctl --user reload camilladsp` re-reads the config without a dropout.
 [Unit]
 Description=CamillaDSP (room EQ)

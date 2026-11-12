@@ -15,8 +15,8 @@
 # AirPlay does not come back by itself: sudo systemctl restart shairport-sync
 #
 # To remove:
-#   systemctl --user disable --now camilladsp camillagui
-#   rm ~/.config/systemd/user/camilla{dsp,gui}.service
+#   systemctl --user disable --now camilladsp camilladsp-link camillagui
+#   rm ~/.config/systemd/user/camilla{dsp,dsp-link,gui}.service
 #   rm ~/.config/pipewire/pipewire.conf.d/camilladsp-sink.conf
 #   rm ~/.local/share/applications/room-eq-calibrate.desktop
 #   rm -r ~/camilladsp
@@ -96,37 +96,49 @@ if [[ -z $(node_id camilladsp-sink) ]]; then
 fi
 sink_id="$(wait_for_node camilladsp-sink)" || die "the sink did not appear; see: journalctl --user -u pipewire -e"
 
-if [[ -n $output ]]; then
-  wait_for_node "$output" >/dev/null || die "no PipeWire node named $output"
-else
-  # Give the interface time to come back after the restart; calibrate.py finds it.
+if [[ -z $output ]]; then
+  # The interface's sink is the Scarlett node that has input ports; give it
+  # time to come back after the restart.
   for _ in {1..30}; do
-    pw-dump | grep -qi '"node.name": "alsa_output.*scarlett' && break
+    mapfile -t found < <(pw-link -i | grep -i scarlett | cut -d: -f1 | sort -u)
+    [[ ${#found[@]} -eq 0 ]] || break
     sleep 0.5
   done
+  [[ ${#found[@]} -eq 1 ]] ||
+    die "expected one Scarlett output, found ${#found[@]}; pass the node name: $0 <output-node>"
+  output="${found[0]}"
 fi
-if [[ ! -f $config ]]; then
-  "$here/calibrate.py" --flat ${output:+--output "$output"}
-elif [[ -n $output ]]; then
-  sed -i "/^  playback:/,/^[^ ]/ s|^    autoconnect_to:.*|    autoconnect_to: \"$output\"|" "$config"
-fi
-"$dir/camilladsp" --check "$config" >/dev/null ||
-  die "$config is not valid for this CamillaDSP; delete it and re-run"
+wait_for_node "$output" >/dev/null || die "no PipeWire node named $output"
+echo "==> Speaker output: $output"
+echo "$output" > "$dir/output-node"
 
-echo "==> Starting camilladsp.service and camillagui.service"
-install -D -m 0644 -t "$HOME/.config/systemd/user" "$here/camilladsp.service" "$here/camillagui.service"
+if [[ -f $config ]]; then
+  # Configs from before camilladsp-link.service asked WirePlumber to connect things.
+  sed -i '/^    autoconnect_to:/d' "$config"
+  "$dir/camilladsp" --check "$config" >/dev/null || die "$config is not valid for this CamillaDSP; delete it and re-run"
+else
+  "$here/calibrate.py" --flat
+fi
+
+echo "==> Starting the services"
+install -m 0755 "$here/camilladsp-link.sh" "$dir/camilladsp-link.sh"
+install -D -m 0644 -t "$HOME/.config/systemd/user" \
+  "$here/camilladsp.service" "$here/camilladsp-link.service" "$here/camillagui.service"
 systemctl --user daemon-reload
-systemctl --user enable camilladsp.service camillagui.service
-systemctl --user restart camilladsp.service camillagui.service
+systemctl --user enable camilladsp.service camilladsp-link.service camillagui.service
+systemctl --user restart camilladsp.service camilladsp-link.service camillagui.service
 wpctl set-default "$sink_id"
-sleep 3
-systemctl --user is-active --quiet camilladsp.service ||
-  die "CamillaDSP did not stay up; see: journalctl --user -u camilladsp -e"
-# pw-link only lists ports that are connected.
-for node in camilladsp-capture camilladsp-playback; do
-  pw-link -l | grep -q "$node:" ||
-    warn "$node is not connected to anything, so there will be no sound; check with: pw-link -l"
+# pw-link -l only lists ports that are connected: expect two capture ports and one playback port.
+for _ in {1..20}; do
+  links="$(pw-link -l | grep -o 'camilladsp-\(capture\|playback\):[^ ]*' | sort -u | wc -l)"
+  [[ $links -lt 3 ]] || break
+  sleep 0.5
 done
+if [[ $links -lt 3 ]]; then
+  systemctl --user --no-pager status camilladsp.service camilladsp-link.service | tail -n 30 >&2 || true
+  pw-link -io >&2 || true
+  die "CamillaDSP is not connected to the sink and the interface (ports and logs above)"
+fi
 
 echo "==> Adding \"Calibrate room EQ\" to the application menu"
 sed "s|@CALIBRATE@|$here/calibrate.py|" "$here/room-eq-calibrate.desktop" > "$tmp/room-eq-calibrate.desktop"
