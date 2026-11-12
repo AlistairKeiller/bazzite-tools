@@ -48,6 +48,16 @@ for o in json.load(sys.stdin):
         break' "$1"
 }
 
+# Print the node.name of every Scarlett output device.
+scarlett_sinks() {
+  pw-dump | python3 -c '
+import json, sys
+for o in json.load(sys.stdin):
+    props = (o.get("info") or {}).get("props") or {}
+    if props.get("media.class") == "Audio/Sink" and "scarlett" in str(props.get("node.name")).lower():
+        print(props["node.name"])'
+}
+
 # Wait up to 15 s for the node named $1 and print its id.
 wait_for_node() {
   local id
@@ -97,15 +107,14 @@ fi
 sink_id="$(wait_for_node camilladsp-sink)" || die "the sink did not appear; see: journalctl --user -u pipewire -e"
 
 if [[ -z $output ]]; then
-  # The interface's sink is the Scarlett node that has input ports; give it
-  # time to come back after the restart.
+  # Give the interface time to come back after the restart.
   for _ in {1..30}; do
-    mapfile -t found < <(pw-link -i | grep -i scarlett | cut -d: -f1 | sort -u)
+    mapfile -t found < <(scarlett_sinks)
     [[ ${#found[@]} -eq 0 ]] || break
     sleep 0.5
   done
   [[ ${#found[@]} -eq 1 ]] ||
-    die "expected one Scarlett output, found ${#found[@]}; pass the node name: $0 <output-node>"
+    die "expected one Scarlett output, found ${#found[@]} (${found[*]}); pass the node name: $0 <output-node>"
   output="${found[0]}"
 fi
 wait_for_node "$output" >/dev/null || die "no PipeWire node named $output"
