@@ -21,5 +21,5 @@ while true; do
   link "$(port -o camilladsp-sink:monitor_ 0)" "$(port -i camilladsp-capture: 0)"
   link "$(port -o camilladsp-sink:monitor_ 1)" "$(port -i camilladsp-capture: 1)"
   link "$(port -o camilladsp-playback: 0)" "$(port -i "$output:" "$channel")"
-  sleep 2
+  sleep 1
 done

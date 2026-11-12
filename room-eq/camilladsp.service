@@ -1,6 +1,5 @@
 # CamillaDSP as a user service: applies ~/camilladsp/configs/room-eq.yml to
 # whatever camilladsp-link.service connects it to.
-# `systemctl --user reload camilladsp` re-reads the config without a dropout.
 [Unit]
 Description=CamillaDSP (room EQ)
 After=pipewire.service wireplumber.service
@@ -8,9 +7,10 @@ PartOf=pipewire.service
 
 [Service]
 ExecStart=%h/camilladsp/camilladsp -a 127.0.0.1 -p 1234 -s %h/camilladsp/statefile.yml %h/camilladsp/configs/room-eq.yml
-ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=3
+# It can hang instead of exiting when a thread crashes; do not wait long for it.
+TimeoutStopSec=3
 
 [Install]
 WantedBy=pipewire.service

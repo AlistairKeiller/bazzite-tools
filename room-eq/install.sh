@@ -129,8 +129,9 @@ echo "==> Speaker output: $output ($side)"
 # Read by camilladsp-link.sh and calibrate.py: node name, then channel index.
 echo "$output $channel" > "$dir/speaker-output"
 
-if [[ -f $config ]]; then
-  # Configs from before camilladsp-link.service asked WirePlumber to connect things.
+if grep -qs room_correction "$config"; then
+  # Keep an existing correction. Configs from before camilladsp-link.service
+  # asked WirePlumber to connect things.
   sed -i '/^    autoconnect_to:/d' "$config"
   "$dir/camilladsp" --check "$config" >/dev/null || die "$config is not valid for this CamillaDSP; delete it and re-run"
 else

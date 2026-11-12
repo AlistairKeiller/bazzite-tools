@@ -9,7 +9,7 @@ Usage:
 Plays a 20 s sweep on the speaker, records it with the measurement mic, and
 hands the recording to DRC-FIR (in the room-eq-drc container that install.sh
 builds), which computes a 65536-tap correction filter towards target.txt. The
-filter goes into the CamillaDSP config and is live at once; a second sweep
+filter goes into the CamillaDSP config and is live within seconds; a second sweep
 through the corrected chain then shows what was actually achieved.
 
 Before running: mic plugged into the interface's XLR input with 48V on, INST
@@ -320,9 +320,14 @@ def speaker_output():
 
 def install_config(note, filter_path=None, headroom=0.0):
     """Write and activate the config; returns whether CamillaDSP is running with it."""
-    correction, names = "", "[]"
+    # CamillaDSP 4.1 crashes on a Filter step when there is no filters section,
+    # so the flat config has neither.
+    correction = filter_step = ""
     if filter_path:
-        names = "[headroom, room_correction]"
+        filter_step = """  - type: Filter
+    channels: [0]
+    names: [headroom, room_correction]
+"""
         correction = f"""
 filters:
   # The correction boosts some frequencies; take that off first so it cannot clip.
@@ -369,10 +374,7 @@ mixers:
 pipeline:
   - type: Mixer
     name: mono
-  - type: Filter
-    channels: [0]
-    names: {names}
-"""
+{filter_step}"""
     CONFIG.parent.mkdir(parents=True, exist_ok=True)
     tmp = CONFIG.with_suffix(".yml.new")
     tmp.write_text(text)
@@ -386,9 +388,11 @@ pipeline:
             old.unlink()
     print(f"==> Wrote {CONFIG} ({note})")
     if subprocess.run(["systemctl", "--user", "is-active", "--quiet", "camilladsp.service"]).returncode != 0:
-        print("warning: camilladsp.service is not running; run install.sh", file=sys.stderr)
+        print("note: camilladsp.service is not running, so nothing is playing through this yet", file=sys.stderr)
         return False
-    subprocess.run(["systemctl", "--user", "reload", "camilladsp.service"], check=True)
+    # A restart rather than a live reload: a second of silence, but it also
+    # recovers a CamillaDSP that has stopped processing.
+    subprocess.run(["systemctl", "--user", "restart", "camilladsp.service"], check=True)
     return True
 
 
@@ -424,7 +428,6 @@ def calibrate(args):
         die(f"DRC wrote a {len(taps)}-tap filter, expected 65536")
     # Largest gain at any frequency, plus 1 dB for what falls between FFT bins.
     headroom = max(max(spectrum_db(taps)), 0.0) + 1.0
-    # A new file name each time, so CamillaDSP sees a changed config and reloads.
     filter_path = COEFFS / f"room-eq-{time.strftime('%Y%m%d-%H%M%S')}.pcm"
     shutil.copyfile(WORK / "filter.pcm", filter_path)
     live = install_config(f"DRC {args.strength}, {time.strftime('%Y-%m-%d %H:%M')}",
@@ -433,7 +436,7 @@ def calibrate(args):
     after = None
     if live and not args.reuse:
         print("==> Measuring the result through the correction")
-        time.sleep(3)  # let CamillaDSP switch to the new filter
+        time.sleep(6)  # let CamillaDSP come back up and be reconnected
         try:
             sweep_and_record("verify", EQ_SINK, mic=mic)
             after = response(*impulse_response("verify"), cal)
