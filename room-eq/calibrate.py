@@ -9,14 +9,15 @@ Usage:
 Plays a 20 s sweep on the speaker, records it with the measurement mic, and
 hands the recording to DRC-FIR (in the room-eq-drc container that install.sh
 builds), which computes a 65536-tap correction filter towards target.txt. The
-filter goes into the CamillaDSP config and is live within seconds; a second sweep
-through the corrected chain then shows what was actually achieved.
+filter goes into the CamillaDSP config and is live within seconds; a second
+sweep through the corrected chain then shows what was actually achieved.
 
 Before running: mic plugged into the interface's XLR input with 48V on, INST
 and AIR off, Direct Monitor OFF, mic at ear height at the listening position
 pointing at the speaker, room quiet and nothing else playing. Every mic input
-of the interface is recorded and the one that hears the sweep is used. Start with the speaker volume low and raise it
-if the script says the signal is too quiet.
+of the interface is recorded and the one that hears the sweep is used. Start
+with the speaker volume low and raise it if the script says the mic did not
+pick the sweep up clearly.
 
 --strength picks one of DRC's stock profiles: stronger corrects more of the
 room's reverberant field at that exact mic position, at the cost of sounding
@@ -166,9 +167,11 @@ def sweep_and_record(name, sink, active=None, mic=None):
         # The interface also exposes line inputs and a loopback of its own
         # output, which would always win on loudness; keep to the mic inputs.
         sources = [s for s in sources if "mic" in s[0].lower()] or sources
+    active = range(len(sink_channels)) if active is None else active
+    if max(active) >= len(sink_channels):
+        die(f"{sink} has only {len(sink_channels)} outputs; re-run install.sh")
     play_path = WORK / "play.wav"
-    write_wav(play_path, read_floats(WORK / "sweep.pcm"), len(sink_channels),
-              range(len(sink_channels)) if active is None else active)
+    write_wav(play_path, read_floats(WORK / "sweep.pcm"), len(sink_channels), active)
     for n in (3, 2, 1):
         print(f"\r    sweep starts in {n}... (about {SWEEP_SECONDS + 6} s, keep quiet)", end="", flush=True)
         time.sleep(1)
@@ -300,12 +303,14 @@ def flatness(bands):
 
 
 def report(before, after):
+    mean_before, worst_before = flatness(before)
+    mean_after, worst_after = flatness(after) if after else (0.0, 0.0)
     print("\n     Hz    before" + ("     after" if after else ""))
     for f in list(before)[::2]:  # third-octave rows
-        row = f"{f:7.0f}  {before[f] - flatness(before)[0]:+6.1f} dB"
-        print(row + (f"  {after[f] - flatness(after)[0]:+6.1f} dB" if after else ""))
-    line = f"{FLAT_BAND[0]:.0f} Hz - {FLAT_BAND[1] / 1000:.0f} kHz: within +/-{flatness(before)[1]:.1f} dB before"
-    print(line + (f", +/-{flatness(after)[1]:.1f} dB after" if after else "") + "\n")
+        row = f"{f:7.0f}  {before[f] - mean_before:+6.1f} dB"
+        print(row + (f"  {after[f] - mean_after:+6.1f} dB" if after else ""))
+    line = f"{FLAT_BAND[0]:.0f} Hz - {FLAT_BAND[1] / 1000:.0f} kHz: within +/-{worst_before:.1f} dB before"
+    print(line + (f", +/-{worst_after:.1f} dB after" if after else "") + "\n")
 
 
 # --- CamillaDSP config -------------------------------------------------------
@@ -390,10 +395,17 @@ pipeline:
     if subprocess.run(["systemctl", "--user", "is-active", "--quiet", "camilladsp.service"]).returncode != 0:
         print("note: camilladsp.service is not running, so nothing is playing through this yet", file=sys.stderr)
         return False
-    # A restart rather than a live reload: a second of silence, but it also
-    # recovers a CamillaDSP that has stopped processing.
+    # A restart rather than a live reload: a few seconds of silence, but it
+    # also recovers a CamillaDSP that has stopped processing.
     subprocess.run(["systemctl", "--user", "restart", "camilladsp.service"], check=True)
-    return True
+    # camilladsp-link.service reconnects it; pw-link -l only lists connected
+    # ports, and there should be both inputs and the first output.
+    for _ in range(30):
+        time.sleep(0.5)
+        links = subprocess.run(["pw-link", "-l"], capture_output=True, text=True).stdout
+        if len(set(re.findall(r"camilladsp-(?:capture|playback):\S+", links))) >= 3:
+            return True
+    die("CamillaDSP did not come back and reconnect; see: journalctl --user -u camilladsp -u camilladsp-link -e")
 
 
 # --- Main --------------------------------------------------------------------
@@ -436,7 +448,7 @@ def calibrate(args):
     after = None
     if live and not args.reuse:
         print("==> Measuring the result through the correction")
-        time.sleep(6)  # let CamillaDSP come back up and be reconnected
+        time.sleep(2)  # let the reconnected chain settle
         try:
             sweep_and_record("verify", EQ_SINK, mic=mic)
             after = response(*impulse_response("verify"), cal)

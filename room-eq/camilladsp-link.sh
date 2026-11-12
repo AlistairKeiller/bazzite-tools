@@ -18,8 +18,12 @@ port() { pw-link "$1" | awk -v prefix="$2" 'index($0, prefix) == 1' | sort | sed
 link() { [[ -z $1 || -z $2 ]] || pw-link "$1" "$2" 2>/dev/null || true; }
 
 while true; do
-  link "$(port -o camilladsp-sink:monitor_ 0)" "$(port -i camilladsp-capture: 0)"
-  link "$(port -o camilladsp-sink:monitor_ 1)" "$(port -i camilladsp-capture: 1)"
-  link "$(port -o camilladsp-playback: 0)" "$(port -i "$output:" "$channel")"
-  sleep 1
+  # pw-link -l only lists connected ports: all is well when both of
+  # CamillaDSP's inputs and its first output are among them.
+  if [[ $(pw-link -l | grep -o 'camilladsp-\(capture\|playback\):[^ ]*' | sort -u | wc -l) -lt 3 ]]; then
+    link "$(port -o camilladsp-sink:monitor_ 0)" "$(port -i camilladsp-capture: 0)"
+    link "$(port -o camilladsp-sink:monitor_ 1)" "$(port -i camilladsp-capture: 1)"
+    link "$(port -o camilladsp-playback: 0)" "$(port -i "$output:" "$channel")"
+  fi
+  sleep 2
 done

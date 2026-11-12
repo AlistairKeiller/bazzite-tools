@@ -42,9 +42,10 @@ This installs, all under your home directory:
 
 ### Calibrating
 
-1. Mic on the XLR input with 48V on, INST and AIR off, **Direct Monitor off**. Put it
-   at ear height at the listening position, pointing at the speaker. Keep the
-   room quiet and stop other playback. Start with the speaker volume low.
+1. Mic on the XLR input with 48V on, INST and AIR off, **Direct Monitor off**.
+   Put it at ear height at the listening position, pointing at the speaker.
+   Keep the room quiet and stop other playback. Start with the speaker volume
+   low.
 2. Run `./room-eq/calibrate.py` or click **Calibrate room EQ**.
 
 It plays a 20 second sweep, computes a 65536-tap correction filter, makes it
@@ -59,9 +60,13 @@ and after, so you can see what was achieved.
   65 Hz and follows the speaker's own roll-off below, so the filter never
   forces bass the speaker cannot produce. Edit it for a house curve.
 - `./room-eq/calibrate.py --reuse --strength strong` recomputes from the last
-  sweep without measuring again; `--flat` removes the correction.
+  sweep without measuring again; `--flat` removes the correction. Switching
+  between `--flat` and `--reuse` is the way to compare before and after by ear
+  (the corrected sound is a few dB quieter, to leave room for the filter).
 - `--cal` takes another mic's calibration file; the default,
   `room-eq/emm6-38048.txt`, is the on-axis file for my EMM-6.
 
-The active config is `~/camilladsp/configs/room-eq.yml`. To bypass everything,
-pick the Scarlett itself as the output device.
+The active config is `~/camilladsp/configs/room-eq.yml`. The chain adds
+some delay (the filter alone is about 20 ms), which video players do not
+compensate for. To bypass everything, pick the Scarlett itself as the output
+device.

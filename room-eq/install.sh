@@ -85,26 +85,30 @@ done
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-echo "==> Downloading CamillaDSP and CamillaGUI"
-curl -fsSL --parallel -o "$tmp/camilladsp.tar.gz" "$camilladsp_url" -o "$tmp/camillagui.tar.gz" "$camillagui_url"
-sha256sum --quiet -c <<EOF || die "a download does not match its expected checksum"
-$camilladsp_sha256  $tmp/camilladsp.tar.gz
-$camillagui_sha256  $tmp/camillagui.tar.gz
-EOF
-
 echo "==> Building the DRC container image"
 podman build -q -t room-eq-drc -f "$here/Containerfile" "$here"
 
-echo "==> Installing into $dir"
-systemctl --user stop camilladsp.service camillagui.service 2>/dev/null || true
-mkdir -p "$dir/configs" "$dir/coeffs"
-tar -xzf "$tmp/camilladsp.tar.gz" -C "$dir" camilladsp
-rm -rf "$dir/camillagui_backend"
-tar -xzf "$tmp/camillagui.tar.gz" -C "$dir"
-# The bundle listens on every interface by default; keep the UI local.
-gui_conf="$dir/camillagui_backend/_internal/config/camillagui.yml"
-sed -i 's/^bind_address:.*/bind_address: "127.0.0.1"/' "$gui_conf"
-grep -q '^bind_address: "127.0.0.1"$' "$gui_conf" || die "could not restrict CamillaGUI to localhost in $gui_conf"
+# $dir/.installed records which downloads are unpacked there, to skip them on a re-run.
+if [[ $(cat "$dir/.installed" 2>/dev/null) == "$camilladsp_sha256 $camillagui_sha256" ]]; then
+  echo "==> CamillaDSP and CamillaGUI are already in $dir"
+else
+  echo "==> Downloading CamillaDSP and CamillaGUI into $dir"
+  curl -fsSL --parallel -o "$tmp/camilladsp.tar.gz" "$camilladsp_url" -o "$tmp/camillagui.tar.gz" "$camillagui_url"
+  sha256sum --quiet -c <<EOF || die "a download does not match its expected checksum"
+$camilladsp_sha256  $tmp/camilladsp.tar.gz
+$camillagui_sha256  $tmp/camillagui.tar.gz
+EOF
+  systemctl --user stop camilladsp.service camillagui.service 2>/dev/null || true
+  mkdir -p "$dir"
+  rm -rf "$dir/.installed" "$dir/camillagui_backend"
+  tar -xzf "$tmp/camilladsp.tar.gz" -C "$dir" camilladsp
+  tar -xzf "$tmp/camillagui.tar.gz" -C "$dir"
+  # The bundle listens on every interface by default; keep the UI local.
+  gui_conf="$dir/camillagui_backend/_internal/config/camillagui.yml"
+  sed -i 's/^bind_address:.*/bind_address: "127.0.0.1"/' "$gui_conf"
+  grep -q '^bind_address: "127.0.0.1"$' "$gui_conf" || die "could not restrict CamillaGUI to localhost in $gui_conf"
+  echo "$camilladsp_sha256 $camillagui_sha256" > "$dir/.installed"
+fi
 
 echo "==> Creating the \"KH 120A (room EQ)\" sink"
 install -D -m 0644 -t "$HOME/.config/pipewire/pipewire.conf.d" "$here/camilladsp-sink.conf"
@@ -147,8 +151,7 @@ systemctl --user enable camilladsp.service camilladsp-link.service camillagui.se
 systemctl --user restart camilladsp.service camilladsp-link.service camillagui.service
 wpctl set-default "$sink_id"
 # pw-link -l only lists ports that are connected: expect two capture ports and one playback port.
-# (camilladsp-link.sh needs a moment after a restart to notice a changed speaker-output.)
-for _ in {1..20}; do
+for _ in {1..30}; do
   links="$(pw-link -l | grep -o 'camilladsp-\(capture\|playback\):[^ ]*' | sort -u | wc -l)"
   [[ $links -lt 3 ]] || break
   sleep 0.5
