@@ -4,12 +4,13 @@
 # container that calibrate.py uses to compute the correction. Everything lands
 # in your home directory; no rpm-ostree layering.
 #
-# Usage: ./install.sh [output-node]
+# Usage: ./install.sh [left|right] [output-node]
 #
-# Run it as your normal desktop user. output-node is the PipeWire node.name of
-# the interface the speaker is on; it defaults to the one Scarlett it finds
-# (list them with: pw-cli ls Node | grep alsa_output). Re-running it upgrades
-# the binaries and units and keeps your current correction.
+# Run it as your normal desktop user. The first argument is the output the one
+# speaker is plugged into (default right). output-node is the PipeWire
+# node.name of the interface; it defaults to the one Scarlett it finds (list
+# them with: pw-cli ls Node | grep alsa_output). Re-running it upgrades the
+# binaries and units and keeps your current correction.
 #
 # The first run restarts PipeWire, which interrupts audio for a moment; if
 # AirPlay does not come back by itself: sudo systemctl restart shairport-sync
@@ -33,7 +34,8 @@ camillagui_sha256=86fd3cde575038f312ede7bad0910dc5e46b974cafc048c26115ec3cb9f547
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 dir="$HOME/camilladsp"
 config="$dir/configs/room-eq.yml"
-output="${1:-}"
+side="${1:-right}"
+output="${2:-}"
 
 die() { echo "error: $*" >&2; exit 1; }
 warn() { echo "warning: $*" >&2; }
@@ -70,6 +72,11 @@ wait_for_node() {
 }
 
 [[ $(id -u) -ne 0 ]] || die "run this as your desktop user, not as root or with sudo"
+case $side in
+  left) channel=0 ;;
+  right) channel=1 ;;
+  *) die "usage: $0 [left|right] [output-node]" ;;
+esac
 [[ $(uname -m) == x86_64 ]] || die "only x86_64 is supported"
 for tool in curl tar sha256sum python3 podman pw-dump pw-link pw-play pw-record wpctl; do
   command -v "$tool" >/dev/null || die "$tool not found"
@@ -114,12 +121,13 @@ if [[ -z $output ]]; then
     sleep 0.5
   done
   [[ ${#found[@]} -eq 1 ]] ||
-    die "expected one Scarlett output, found ${#found[@]} (${found[*]}); pass the node name: $0 <output-node>"
+    die "expected one Scarlett output, found ${#found[@]} (${found[*]}); pass the node name: $0 $side <output-node>"
   output="${found[0]}"
 fi
 wait_for_node "$output" >/dev/null || die "no PipeWire node named $output"
-echo "==> Speaker output: $output"
-echo "$output" > "$dir/output-node"
+echo "==> Speaker output: $output ($side)"
+# Read by camilladsp-link.sh and calibrate.py: node name, then channel index.
+echo "$output $channel" > "$dir/speaker-output"
 
 if [[ -f $config ]]; then
   # Configs from before camilladsp-link.service asked WirePlumber to connect things.
@@ -138,6 +146,7 @@ systemctl --user enable camilladsp.service camilladsp-link.service camillagui.se
 systemctl --user restart camilladsp.service camilladsp-link.service camillagui.service
 wpctl set-default "$sink_id"
 # pw-link -l only lists ports that are connected: expect two capture ports and one playback port.
+# (camilladsp-link.sh needs a moment after a restart to notice a changed speaker-output.)
 for _ in {1..20}; do
   links="$(pw-link -l | grep -o 'camilladsp-\(capture\|playback\):[^ ]*' | sort -u | wc -l)"
   [[ $links -lt 3 ]] || break

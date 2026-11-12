@@ -18,12 +18,14 @@ Details and removal steps are at the top of the script.
 
 ## room-eq
 
-For one speaker (Neumann KH 120A) on the left output of a Focusrite Scarlett,
+For one speaker (Neumann KH 120A) on one output of a Focusrite Scarlett,
 measured with a Dayton EMM-6 on its mic input.
 
 ```
-./room-eq/install.sh
+./room-eq/install.sh [left|right]
 ```
+
+The argument is the output the speaker is plugged into (default `right`).
 
 This installs, all under your home directory:
 
@@ -31,7 +33,7 @@ This installs, all under your home directory:
   AirPlay play into it;
 - [CamillaDSP](https://github.com/HEnquist/camilladsp) as a user service, which
   mixes that output down to mono, applies the correction and plays it on the
-  Scarlett's left output, and a small service that keeps it connected to both;
+  speaker's output only, and a small service that keeps it connected to both;
 - [CamillaGUI](https://github.com/HEnquist/camillagui-backend) at
   <http://localhost:5005> for level meters, volume and a look at the pipeline;
 - a small container with [DRC-FIR](https://drc-fir.sourceforge.net/), which
